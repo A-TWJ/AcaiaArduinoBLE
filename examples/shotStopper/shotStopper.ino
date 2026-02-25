@@ -25,9 +25,11 @@
 #include <EEPROM.h>
 
 #define MAX_OFFSET 5                // In case an error in brewing occured
-#define MIN_SHOT_DURATION_S 3       //Useful for flushing the group.
-                                    // This ensure that the system will ignore
-                                    // "shots" that last less than this duration
+#define LATCH_TIME_S 3              // Duration after the shot starts that the shotStopper will
+                                    // take over and the user can then move the paddle back.
+#define RINSE_TRIGGER_DURATION_S 1  // Swipe the paddle for up to this duration to trigger
+                                    // a flush
+#define RINSE_DURATION_S 3 
 #define MAX_SHOT_DURATION_S 50      //Primarily useful for latching switches, since user
                                     // looses control of the paddle once the system
                                     // latches.
@@ -114,11 +116,12 @@ struct Shot {
   float time_s[1000];      // Number of seconds after the shot starte
   int datapoints;          // Number of datapoitns in the scatter plot
   bool brewing;            // True when actively brewing, otherwise false
+  bool rinsing;
   ENDTYPE end;
 };
 
 //Initialize shot
-Shot shot = {0,0,0,0,{},{},0,false,ENDTYPE::UNDEF};
+Shot shot = {0,0,0,0,{},{},0,false,false,ENDTYPE::UNDEF};
 
 //BLE peripheral device
 BLEService weightService("0x0FFE"); // create service
@@ -281,7 +284,7 @@ void loop() {
   && !MOMENTARY 
   && shot.brewing 
   && !buttonLatched 
-  && (shot.shotTimer > MIN_SHOT_DURATION_S) 
+  && (shot.shotTimer > LATCH_TIME_S) 
   ){
     buttonLatched = true;
     Serial.println("Button Latched");
@@ -290,6 +293,19 @@ void loop() {
     if(AUTOTARE){
       scale.tare();
     }
+  }
+
+  //button released right after pressed (rinse!)
+  else if(!MOMENTARY 
+  && !newButtonState
+  && buttonPressed == true
+  && shot.shotTimer < RINSE_TRIGGER_DURATION_S
+  ){
+    shot.rinsing = true;
+    buttonPressed = false;
+    buttonLatched = true;
+    Serial.println("Button latched for rinse");
+    digitalWrite(OUT,HIGH); Serial.println("wrote high");
   }
 
   // SHOT COMPLETION EVENTS --------------------------------
@@ -318,6 +334,18 @@ void loop() {
     setBrewingState(shot.brewing);
   }
 
+  //Flush completed
+  else if(!MOMENTARY 
+  && shot.rinsing
+  && shot.shotTimer > RINSE_DURATION_S
+  ){
+    shot.rinsing = false;
+    shot.brewing = false;
+    buttonLatched = false;
+    Serial.println("Button unlatched rinse");
+    digitalWrite(OUT,LOW); Serial.println("wrote low");
+  }
+
   //Blink LED while brewing
   if(shot.brewing){
     setColor( (millis()/1000)%2 ? GREEN : BLUE );
@@ -327,7 +355,7 @@ void loop() {
   if(!TIMER_ONLY 
   && shot.brewing 
   && shot.shotTimer >= shot.expected_end_s
-  && shot.shotTimer >  MIN_SHOT_DURATION_S
+  && shot.shotTimer >  LATCH_TIME_S
   ){
     Serial.println("weight achieved");
     shot.brewing = false;
